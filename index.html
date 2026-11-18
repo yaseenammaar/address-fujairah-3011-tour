@@ -1071,11 +1071,16 @@ const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),.14,.4
 composer.addPass(bloom);
 composer.addPass(new OutputPass());
 // photographic finish: gentle vignette and fine film grain
-const grade=new ShaderPass({uniforms:{tDiffuse:{value:null},vig:{value:.32},grain:{value:.022}},
+const grade=new ShaderPass({uniforms:{tDiffuse:{value:null},vig:{value:.32},grain:{value:.012}},
   vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
   fragmentShader:`uniform sampler2D tDiffuse;uniform float vig,grain;varying vec2 vUv;float h(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}void main(){vec4 c=texture2D(tDiffuse,vUv);vec2 d=vUv-.5;c.rgb*=1.-vig*dot(d,d)*1.5;c.rgb+=(h(gl_FragCoord.xy)-.5)*grain;gl_FragColor=c;}`});
 composer.addPass(grade);
 let prDrop=0;
+/* dynamic resolution: lighter while the view is moving, full screen sharpness (Retina included) the moment it stops */
+let moving=false,lastMove=0,curPR=0;
+function idlePR(){const d=devicePixelRatio||1,cap=Math.sqrt(8.3e6/Math.max(1,innerWidth*innerHeight));return Math.max(1,Math.min(d,quality==='high'?2:1.75,cap))}
+function motionPR(){const base=Math.min(devicePixelRatio||1,quality==='high'?1.5:1.25);return Math.max(.6,base-prDrop*.25)}
+function setPR(pr){if(Math.abs(pr-curPR)<.01)return;curPR=pr;renderer.setPixelRatio(pr);composer.setPixelRatio(pr)}
 /* light probe: the apartment itself, captured from the living room, lights and reflects in every interior surface */
 const cubeRT=new THREE.WebGLCubeRenderTarget(256,{type:THREE.HalfFloatType});
 const cubeCam=new THREE.CubeCamera(.05,600,cubeRT);cubeCam.position.set(6.9,1.45,3.0);scene.add(cubeCam);
@@ -1092,7 +1097,7 @@ function applyQuality(){
   const hi=quality==='high';
   gtao.enabled=hi;bloom.enabled=hi;
   {const smp=hi?4:0;for(const r of [composer.renderTarget1,composer.renderTarget2])if(r.samples!==smp){r.samples=smp;r.dispose()}}
-  const pr=Math.max(.6,Math.min(devicePixelRatio||1,hi?(innerWidth*innerHeight>1.4e6?1.25:1.5):1)-prDrop*.25);renderer.setPixelRatio(pr);composer.setPixelRatio(pr);
+  setPR(moving?motionPR():idlePR());
   const ms=hi?4096:2048;if(sun.shadow.mapSize.x!==ms){sun.shadow.mapSize.set(ms,ms);if(sun.shadow.map){sun.shadow.map.dispose();sun.shadow.map=null}}
   renderer.shadowMap.needsUpdate=true;dirty=true;
   resize();
@@ -1339,12 +1344,16 @@ function tick(now){
     if(walkTarget){const dx=walkTarget.x-P.x,dz=walkTarget.z-P.z,d=Math.hypot(dx,dz);if(d<.04)walkTarget=null;else{const st=Math.min(d,2.4*dt*Math.min(1,d*1.6+.25));const ox=P.x,oz=P.z;tryMove(dx/d*st,dz/d*st);if(Math.hypot(P.x-ox,P.z-oz)<st*.2)walkTarget=null}}
   }
   const sg=mode==='doll'?`d${doll.az},${doll.el},${doll.dist}`:`w${P.x},${P.z},${P.yaw},${P.pitch},${camera.fov}`;
+  const motion=sg!==lastSig||playing;
   if(sg!==lastSig){lastSig=sg;dirty=true}
+  if(motion){lastMove=now;if(!moving){moving=true;setPR(motionPR())}}
+  else if(moving&&now-lastMove>220){moving=false;setPR(idlePR());dirty=true}
   if(dirty){
-    if(clock>3&&dt>0&&dt<.2){slowAcc+=dt;slowN++;if(slowN>=40){const avg=slowAcc/slowN;slowAcc=slowN=0;if(avg>.024&&prDrop<3&&now-lastPrChange>1500){prDrop++;lastPrChange=now;applyQuality()}}}
+    // only frames rendered while moving tune the moving resolution; the still view is always full quality
+    if(moving&&clock>3&&dt>0&&dt<.2){slowAcc+=dt;slowN++;if(slowN>=30){const avg=slowAcc/slowN;slowAcc=slowN=0;if(avg>.026&&prDrop<3&&now-lastPrChange>1500){prDrop++;lastPrChange=now;setPR(motionPR())}else if(avg<.014&&prDrop>0&&now-lastPrChange>3000){prDrop--;lastPrChange=now;setPR(motionPR())}}}
     dirty=false;
     applyCam();camera.updateMatrixWorld();
-    if(dust.visible){updateDust(clock);dirty=true}
+    if(dust.visible&&moving){updateDust(clock);dirty=true}
     for(const s of sprites){const d=s.position.distanceTo(camera.position);s.material.opacity=Math.max(0,Math.min(1,(d-.7)/.5))}
     placeLabels();updateRoom();drawMap();
     composer.render();
@@ -1353,7 +1362,7 @@ function tick(now){
 }
 computeDay();
 applyQuality();renderText();applySun();markChip('dining');applyCam();
-window.__af={scene,camera,P,S,setMode,flyTo,STOPS,applySun,colliders,composer,gtao,bloom,applyQuality,renderer};
+window.__af={scene,camera,P,S,setMode,flyTo,STOPS,applySun,colliders,composer,gtao,bloom,applyQuality,renderer,get pr(){return curPR}};
 const start=()=>requestAnimationFrame(t=>{last=t;tick(t);const ld=$('loading');if(ld){ld.classList.add('done');setTimeout(()=>ld.remove(),600)}});
 // compile every shader in parallel first, so the first frame doesn't freeze the page
 (renderer.compileAsync?renderer.compileAsync(scene,camera):Promise.resolve()).then(start,start);
